@@ -30,7 +30,7 @@
 
 static h2o_httpclient_connection_pool_t *connpool;
 static h2o_mem_pool_t pool;
-static const char *url;
+static char url[2048];
 static char *method = "GET";
 static int cnt_left = 3;
 static int body_size = 0;
@@ -40,6 +40,11 @@ static int delay_interval_ms = 0;
 static int ssl_verify_none = 0;
 static int http2_ratio = -1;
 static int cur_body_size;
+static char *save_path = NULL;
+static char *server_file_path = NULL;
+static char url1[2048] = {0};
+static char url2[2048] = {0};
+static char url3[2048] = {0};
 
 static h2o_httpclient_head_cb on_connect(h2o_httpclient_t *client, const char *errstr, h2o_iovec_t *method, h2o_url_t *url,
                                          const h2o_header_t **headers, size_t *num_headers, h2o_iovec_t *body,
@@ -105,7 +110,7 @@ static void start_request(h2o_httpclient_ctx_t *ctx)
         sprintf(crt_fullpath, "%s%s", root, CA_PATH);
 #undef CA_PATH
 
-        SSL_CTX *ssl_ctx = SSL_CTX_new(TLSv1_client_method());
+        SSL_CTX *ssl_ctx = SSL_CTX_new(TLSv1_2_client_method());
         SSL_CTX_load_verify_locations(ssl_ctx, crt_fullpath, NULL);
         if (ssl_verify_none) {
             SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
@@ -124,11 +129,24 @@ static int on_body(h2o_httpclient_t *client, const char *errstr)
         on_error(client->ctx, errstr);
         return -1;
     }
-
+    FILE *save_file = NULL;
+    if (save_path != NULL) {
+        save_file = fopen(save_path, "wb");
+        if (save_file == NULL) {
+            printf("Some error occured when opening this file!\n");
+            if (errno == ENOENT) {
+                printf("No such file or dictionary!\n");
+            }
+        } else {
+            fwrite((*client->buf)->bytes, 1, (*client->buf)->size, save_file);
+        }
+    }
     fwrite((*client->buf)->bytes, 1, (*client->buf)->size, stdout);
     h2o_buffer_consume(&(*client->buf), (*client->buf)->size);
 
     if (errstr == h2o_httpclient_error_is_eos) {
+        if (save_path != NULL && save_file != NULL)
+            fclose(save_file);
         if (--cnt_left != 0) {
             /* next attempt */
             h2o_mem_clear_pool(&pool);
@@ -264,9 +282,23 @@ h2o_httpclient_head_cb on_connect(h2o_httpclient_t *client, const char *errstr, 
 static void usage(const char *progname)
 {
     fprintf(stderr,
-            "Usage: [-t <times>] [-m <method>] [-b <body size>] [-c <chunk size>] [-i <interval between chunks>] %s <url>\n",
+            "Usage: [-t <server file path> default: /index.html] [-m <method>] [-b <body size>] [-c <chunk size>] [-i <interval between chunks>] [-o <saved file path>]%s <url1> <url2> <url3>\n",
             progname);
 }
+static void process_url(char * url_, char * u) {
+    char * url__ = url_;
+    if (!(u[0] == 'h' && u[1] == 't' && u[2] == 't' && u[3] == 'p' && u[4] == 's')) {
+        sprintf(url__, "https://");
+        url__ += 8;
+    }
+    if (server_file_path != NULL) {
+        sprintf(url__, "%s/%s", u, server_file_path);
+    }
+    else {
+        sprintf(url__, "%s", u);
+    }
+    printf("%s\n", url_);
+} 
 int main(int argc, char **argv)
 {
     h2o_multithread_queue_t *queue;
@@ -289,10 +321,11 @@ int main(int argc, char **argv)
     SSL_library_init();
     OpenSSL_add_all_algorithms();
 
-    while ((opt = getopt(argc, argv, "t:m:b:c:i:r:k")) != -1) {
+    while ((opt = getopt(argc, argv, "o:t:m:b:c:i:r:k")) != -1) {
         switch (opt) {
         case 't':
-            cnt_left = atoi(optarg);
+            server_file_path = malloc(strlen(optarg) + 1);
+            strcpy(server_file_path, optarg);
             break;
         case 'm':
             method = optarg;
@@ -320,17 +353,25 @@ int main(int argc, char **argv)
         case 'k':
             ssl_verify_none = 1;
             break;
+        case 'o':
+            save_path = malloc(strlen(optarg) + 1);
+            strcpy(save_path, optarg);
+            break;
         default:
             usage(argv[0]);
             exit(EXIT_FAILURE);
             break;
         }
     }
-    if (argc - optind != 1) {
+    if (argc - optind != 3 || strlen(argv[optind]) < 7 || 
+        strlen(argv[optind + 1]) < 7 || strlen(argv[optind + 2]) < 7) {
         usage(argv[0]);
         exit(EXIT_FAILURE);
     }
-    url = argv[optind];
+    process_url(url1, argv[optind]);
+    process_url(url2, argv[optind + 1]);
+    process_url(url3, argv[optind + 2]);
+    strcpy(url, url1);
 
     if (body_size != 0) {
         iov_filler.base = h2o_mem_alloc(chunk_size);
