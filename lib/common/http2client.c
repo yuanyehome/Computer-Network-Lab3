@@ -75,6 +75,8 @@ struct st_h2o_http2client_conn_t {
         ssize_t (*read_frame)(struct st_h2o_http2client_conn_t *conn, const uint8_t *src, size_t len, const char **err_desc);
         h2o_buffer_t *headers_unparsed;
     } input;
+    // my struct
+    algorithm_ctx my_struct;
 };
 
 struct st_h2o_http2client_stream_t {
@@ -132,6 +134,7 @@ static void stream_send_error(struct st_h2o_http2client_conn_t *conn, uint32_t s
     assert(stream_id != 0);
     assert(conn->state != H2O_HTTP2CLIENT_CONN_STATE_IS_CLOSING);
 
+    printf("\033[33m[DEBUG]\033[0m send rst\n");
     h2o_http2_encode_rst_stream_frame(&conn->output.buf, stream_id, -errnum);
     request_write(conn);
 }
@@ -626,6 +629,20 @@ static int handle_push_promise_frame(struct st_h2o_http2client_conn_t *conn, h2o
     return H2O_HTTP2_ERROR_PROTOCOL;
 }
 
+
+/*Begin of my functions*/
+static void send_ping_frame(struct st_h2o_http2client_conn_t *conn) {
+    printf("\033[32m[INFO]\033[0m [send_ping_frame]\n");
+    h2o_http2_ping_payload_t payload;
+    memset(payload.data, 0, 8);
+    h2o_http2_encode_ping_frame(&conn->output.buf, 0, payload.data);
+    gettimeofday(&conn->my_struct.ping_start, NULL);
+    request_write(conn);
+}
+
+
+/*End of my functions*/
+
 static int handle_ping_frame(struct st_h2o_http2client_conn_t *conn, h2o_http2_frame_t *frame, const char **err_desc)
 {
     h2o_http2_ping_payload_t payload;
@@ -637,6 +654,32 @@ static int handle_ping_frame(struct st_h2o_http2client_conn_t *conn, h2o_http2_f
     if ((frame->flags & H2O_HTTP2_FRAME_FLAG_ACK) == 0) {
         h2o_http2_encode_ping_frame(&conn->output.buf, 1, payload.data);
         request_write(conn);
+    }
+    else {
+        printf("\033[32m[INFO]\033[0m [handle_ping_frame] [PING-ACK]\n");
+        gettimeofday(&conn->my_struct.ping_end, NULL);
+        int cnt = conn->my_struct.cnt;
+        if (cnt != 5) {
+            conn->my_struct.rtt_list[cnt] = (conn->my_struct.ping_end.tv_sec -                                  conn->my_struct.ping_start.tv_sec) * 1000.0 + (conn->my_struct.ping_end.tv_usec -               conn->my_struct.ping_start.tv_usec) * 1.0 / 1000;
+            printf("\033[32m[INFO]\033[0m [This RTT: %lfms]\n", conn->my_struct.rtt_list[cnt]);
+            cnt++, conn->my_struct.cnt++;
+        } else {
+            for (int i = 0; i < 4; ++i) {
+                conn->my_struct.rtt_list[i] = conn->my_struct.rtt_list[i + 1];
+            }
+            conn->my_struct.rtt_list[4] = (conn->my_struct.ping_end.tv_sec -                                    conn->my_struct.ping_start.tv_sec) * 1000.0 + (conn->my_struct.ping_end.tv_usec -               conn->my_struct.ping_start.tv_usec) * 1.0 / 1000;
+            printf("\033[32m[INFO]\033[0m [This RTT: %lfms]\n", conn->my_struct.rtt_list[4]);
+        }
+        double rtt = 0;
+        for (int i = 0; i < cnt; ++i) {
+            rtt += conn->my_struct.rtt_list[i];
+        }
+        conn->my_struct.rtt = rtt / cnt;
+        printf("\033[32m[INFO]\033[0m [RTT: %lfms; Downloaded: %d Bytes; Bandwidth: %lf M/s]\n", 
+            conn->my_struct.rtt,
+            conn->my_struct.downloaded,
+            conn->my_struct.bandwidth);
+        send_ping_frame(conn);
     }
 
     return 0;
@@ -950,6 +993,7 @@ static void on_connection_ready(struct st_h2o_http2client_stream_t *stream, stru
     h2o_httpclient_properties_t props = (h2o_httpclient_properties_t){NULL};
 
     register_stream(stream, conn);
+    gettimeofday(&conn->my_struct.last_body_time, NULL);
 
     stream->super._cb.on_head =
         stream->super._cb.on_connect(&stream->super, NULL, &method, &url, (const h2o_header_t **)&headers, &num_headers, &body,
@@ -960,6 +1004,7 @@ static void on_connection_ready(struct st_h2o_http2client_stream_t *stream, stru
     }
 
     h2o_http2_window_init(&stream->output.window, conn->peer_settings.initial_window_size);
+    send_ping_frame(conn);
 
     /* send headers */
     h2o_hpack_flatten_request(&conn->output.buf, &conn->output.header_table, stream->stream_id, conn->peer_settings.max_frame_size,
@@ -1237,6 +1282,12 @@ static h2o_socket_t *do_get_socket(h2o_httpclient_t *_client)
     return stream->conn->super.sock;
 }
 
+static algorithm_ctx *do_get_alg(h2o_httpclient_t *_client)
+{
+    struct st_h2o_http2client_stream_t *stream = (void *)_client;
+    return &(stream->conn->my_struct);
+}
+
 static void do_update_window(h2o_httpclient_t *_client)
 {
     struct st_h2o_http2client_stream_t *stream = (void *)_client;
@@ -1280,6 +1331,7 @@ static void setup_stream(struct st_h2o_http2client_stream_t *stream)
     stream->super.cancel = do_cancel;
     stream->super.steal_socket = NULL;
     stream->super.get_socket = do_get_socket;
+    stream->super.get_alg = do_get_alg;
     stream->super.update_window = do_update_window;
     stream->super.write_req = do_write_req;
 }

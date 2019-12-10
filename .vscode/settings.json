@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "httpclient.h": "c",
+        "stdlib.h": "c",
+        "h2o.h": "c",
+        "time_.h": "c",
+        "array": "c",
+        "string_view": "c",
+        "initializer_list": "c",
+        "utility": "c"
+    }
+}

@@ -41,6 +41,7 @@ static int ssl_verify_none = 0;
 static int http2_ratio = -1;
 static int cur_body_size;
 static char *save_path = NULL;
+FILE *save_file = NULL;
 static char *server_file_path = NULL;
 static char url1[2048] = {0};
 static char url2[2048] = {0};
@@ -129,31 +130,40 @@ static int on_body(h2o_httpclient_t *client, const char *errstr)
         on_error(client->ctx, errstr);
         return -1;
     }
-    FILE *save_file = NULL;
-    if (save_path != NULL) {
-        save_file = fopen(save_path, "wb");
-        if (save_file == NULL) {
-            printf("Some error occured when opening this file!\n");
-            if (errno == ENOENT) {
-                printf("No such file or dictionary!\n");
-            }
-        } else {
-            fwrite((*client->buf)->bytes, 1, (*client->buf)->size, save_file);
-        }
+    algorithm_ctx *alg = client->get_alg(client);
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    double time = now.tv_sec - alg->last_body_time.tv_sec
+                    + (now.tv_usec - alg->last_body_time.tv_usec) * 1.0 / 1000000;
+    alg->downloaded += (*client->buf)->size;
+    printf("\033[33m[DEBUG]\033[0m [size: %ld; time: %lf]\n", (*client->buf)->size, time);
+    alg->bandwidth = (*client->buf)->size / (time * 1024 * 1024);
+    printf("\033[33m[DEBUG]\033[0m [This bandwidth: %lfM/s]\n", alg->bandwidth);
+    alg->last_body_time = now;
+    if (alg->bw_cnt != 5) {
+        alg->bandwidth_list[alg->bw_cnt++] = alg->bandwidth;
     }
-    fwrite((*client->buf)->bytes, 1, (*client->buf)->size, stdout);
+    else {
+        for (int i = 0; i < 4; ++i) {
+            alg->bandwidth_list[i] = alg->bandwidth_list[i + 1];
+        }
+        alg->bandwidth_list[4] = alg->bandwidth;
+    }
+    for (int i = 0; i < alg->bw_cnt - 1; ++i) {
+        alg->bandwidth += alg->bandwidth_list[i];
+    }
+    alg->bandwidth /= alg->bw_cnt;
+    fwrite((*client->buf)->bytes, 1, (*client->buf)->size, save_file);
+    // fwrite((*client->buf)->bytes, 1, (*client->buf)->size, stdout);
     h2o_buffer_consume(&(*client->buf), (*client->buf)->size);
 
     if (errstr == h2o_httpclient_error_is_eos) {
-        if (save_path != NULL && save_file != NULL)
-            fclose(save_file);
         if (--cnt_left != 0) {
             /* next attempt */
             h2o_mem_clear_pool(&pool);
             start_request(client->ctx);
         }
     }
-
     return 0;
 }
 
@@ -175,7 +185,6 @@ h2o_httpclient_body_cb on_head(h2o_httpclient_t *client, const char *errstr, int
                                h2o_header_t *headers, size_t num_headers, int header_requires_dup)
 {
     size_t i;
-
     if (errstr != NULL && errstr != h2o_httpclient_error_is_eos) {
         on_error(client->ctx, errstr);
         return NULL;
@@ -257,11 +266,12 @@ h2o_httpclient_head_cb on_connect(h2o_httpclient_t *client, const char *errstr, 
     *num_headers = 0;
     *body = h2o_iovec_init(NULL, 0);
     *proceed_req_cb = NULL;
-
+    // printf("\033[33m[DEBUG]\033[0m %d\n", cur_body_size);
     if (cur_body_size > 0) {
         char *clbuf = h2o_mem_alloc_pool(&pool, char, sizeof(H2O_UINT32_LONGEST_STR) - 1);
         size_t clbuf_len = sprintf(clbuf, "%d", cur_body_size);
         h2o_headers_t headers_vec = (h2o_headers_t){NULL};
+        printf("\033[33m[DEBUG]\033[0m %s\n", H2O_TOKEN_CONTENT_LENGTH->buf.base);
         h2o_add_header(&pool, &headers_vec, H2O_TOKEN_CONTENT_LENGTH, NULL, clbuf, clbuf_len);
         *headers = headers_vec.entries;
         *num_headers = 1;
@@ -299,8 +309,17 @@ static void process_url(char * url_, char * u) {
     }
     printf("%s\n", url_);
 } 
+
+/*Begin of my functions*/
+
+
+/*End of my functions*/
+
+
 int main(int argc, char **argv)
 {
+    struct timeval file_start, file_end;
+    gettimeofday(&file_start, NULL);
     h2o_multithread_queue_t *queue;
     h2o_multithread_receiver_t getaddr_receiver;
 
@@ -380,12 +399,24 @@ int main(int argc, char **argv)
     }
     h2o_mem_init_pool(&pool);
 
+    if (save_path != NULL) {
+        save_file = fopen(save_path, "wb");
+        if (save_file == NULL) {
+            printf("Some error occured when opening this file!\n");
+            if (errno == ENOENT) {
+                printf("No such file or dictionary!\n");
+            }
+        }
+    }
+
     ctx.http2.ratio = http2_ratio;
 
 /* setup context */
 #if H2O_USE_LIBUV
+    printf("\033[32m[INFO]\033[0m You are using libuv\n");
     ctx.loop = uv_loop_new();
 #else
+    printf("\033[32m[INFO]\033[0m You are \033[31mnot\033[0m Using libuv\n");
     ctx.loop = h2o_evloop_create();
 #endif
 
@@ -394,7 +425,6 @@ int main(int argc, char **argv)
 
     /* setup the first request */
     start_request(&ctx);
-
     while (cnt_left != 0) {
 #if H2O_USE_LIBUV
         uv_run(ctx.loop, UV_RUN_ONCE);
@@ -403,5 +433,10 @@ int main(int argc, char **argv)
 #endif
     }
 
+    if (save_path != NULL && save_file != NULL)
+        fclose(save_file);
+    gettimeofday(&file_end, NULL);
+    printf("\033[32m[INFO]\033[0m [Full time: %lf ms]\n", (file_end.tv_sec - file_start.tv_sec) * 1000.0 + 
+        (file_end.tv_usec - file_start.tv_usec) * 1.0 / 1000);
     return 0;
 }

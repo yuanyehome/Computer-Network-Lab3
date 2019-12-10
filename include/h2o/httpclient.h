@@ -97,6 +97,19 @@ typedef struct st_h2o_httpclient_timings_t {
     struct timeval response_end_at;
 } h2o_httpclient_timings_t;
 
+typedef struct {
+    int cnt;
+    int bw_cnt;
+    struct timeval ping_start;
+    struct timeval ping_end;
+    struct timeval last_body_time;
+    double rtt_list[5];
+    double rtt;
+    double bandwidth;
+    double bandwidth_list[5];
+    int downloaded;
+} algorithm_ctx;
+
 struct st_h2o_httpclient_t {
     /**
      * memory pool
@@ -139,6 +152,10 @@ struct st_h2o_httpclient_t {
      * returns a pointer to the underlying h2o_socket_t
      */
     h2o_socket_t *(*get_socket)(h2o_httpclient_t *client);
+    /**
+     * returns a pointer to the alg
+     */
+    algorithm_ctx *(*get_alg)(h2o_httpclient_t *cleint);
     /**
      * callback that should be called when some data is fetched out from `buf`.
      */
