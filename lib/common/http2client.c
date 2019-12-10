@@ -675,10 +675,16 @@ static int handle_ping_frame(struct st_h2o_http2client_conn_t *conn, h2o_http2_f
             rtt += conn->my_struct.rtt_list[i];
         }
         conn->my_struct.rtt = rtt / cnt;
-        printf("\033[32m[INFO]\033[0m [RTT: %lfms; Downloaded: %d Bytes; Bandwidth: %lf M/s]\n", 
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        double time = now.tv_sec - conn->my_struct.all_start_time.tv_sec
+                    + (now.tv_usec - conn->my_struct.all_start_time.tv_usec) * 1.0 / 1000000;
+        conn->my_struct.cmp_bandwidth = conn->my_struct.downloaded / (time * 1024 * 1024);
+        printf("\033[32m[INFO]\033[0m [RTT: %lfms; Downloaded: %d Bytes; Bandwidth: %lf M/s]\n\033[35m[Compare]\033[0m [cmp_bw: %lf M/s]\n", 
             conn->my_struct.rtt,
             conn->my_struct.downloaded,
-            conn->my_struct.bandwidth);
+            conn->my_struct.bandwidth,
+            conn->my_struct.cmp_bandwidth);
         send_ping_frame(conn);
     }
 

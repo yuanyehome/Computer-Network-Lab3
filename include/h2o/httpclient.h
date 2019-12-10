@@ -103,9 +103,11 @@ typedef struct {
     struct timeval ping_start;
     struct timeval ping_end;
     struct timeval last_body_time;
+    struct timeval all_start_time;
     double rtt_list[5];
     double rtt;
     double bandwidth;
+    double cmp_bandwidth;
     double bandwidth_list[5];
     int downloaded;
 } algorithm_ctx;

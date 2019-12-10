@@ -259,7 +259,7 @@ h2o_httpclient_head_cb on_connect(h2o_httpclient_t *client, const char *errstr, 
         on_error(client->ctx, errstr);
         return NULL;
     }
-
+    gettimeofday(&((client->get_alg(client))->all_start_time), NULL);
     *_method = h2o_iovec_init(method, strlen(method));
     *url = *((h2o_url_t *)client->data);
     *headers = NULL;
