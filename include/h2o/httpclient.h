@@ -31,6 +31,45 @@ extern "C" {
 #include "h2o/socketpool.h"
 
 typedef struct st_h2o_httpclient_t h2o_httpclient_t;
+typedef struct st_h2o_httpclient_connection_pool_t {
+    /**
+     * used to establish connections and pool those when h1 is used.
+     * socketpool is shared among multiple threads while connection pool is dedicated to each thread
+     */
+    h2o_socketpool_t *socketpool;
+
+    struct {
+        h2o_linklist_t conns;
+    } http2;
+
+} h2o_httpclient_connection_pool_t;
+
+typedef struct {
+    int cnt;
+    int bw_cnt;
+    struct timeval ping_start;
+    struct timeval ping_end;
+    struct timeval last_body_time;
+    struct timeval all_start_time;
+    double rtt_list[5];
+    double rtt;
+    double bandwidth;
+    double cmp_bandwidth;
+    double bandwidth_list[5];
+    size_t downloaded;
+} algorithm_ctx;
+typedef struct {
+    size_t downloaded_size;
+    size_t will_be_downloaded_size;
+    size_t base_loc;
+    u_int8_t is_range;
+    u_int8_t will_done;
+    u_int8_t num_streams;
+    double time_left;
+    algorithm_ctx * alg;
+    h2o_httpclient_connection_pool_t *connpool;
+    size_t range[2];
+} sheduler_ctx;
 
 typedef struct st_h2o_httpclient_properties_t {
     h2o_iovec_t *proxy_protocol;
@@ -55,18 +94,7 @@ typedef h2o_httpclient_head_cb (*h2o_httpclient_connect_cb)(h2o_httpclient_t *cl
 typedef int (*h2o_httpclient_informational_cb)(h2o_httpclient_t *client, int version, int status, h2o_iovec_t msg,
                                                h2o_header_t *headers, size_t num_headers);
 
-typedef struct st_h2o_httpclient_connection_pool_t {
-    /**
-     * used to establish connections and pool those when h1 is used.
-     * socketpool is shared among multiple threads while connection pool is dedicated to each thread
-     */
-    h2o_socketpool_t *socketpool;
 
-    struct {
-        h2o_linklist_t conns;
-    } http2;
-
-} h2o_httpclient_connection_pool_t;
 
 typedef struct st_h2o_httpclient_ctx_t {
     h2o_loop_t *loop;
@@ -77,6 +105,8 @@ typedef struct st_h2o_httpclient_ctx_t {
     uint64_t *websocket_timeout; /* NULL if upgrade to websocket is not allowed */
     uint64_t keepalive_timeout;  /* only used for http2 for now */
     size_t max_buffer_size;
+    sheduler_ctx *s_ctx;
+    char *url;
 
     struct {
         h2o_socket_latency_optimization_conditions_t latency_optimization;
@@ -97,20 +127,8 @@ typedef struct st_h2o_httpclient_timings_t {
     struct timeval response_end_at;
 } h2o_httpclient_timings_t;
 
-typedef struct {
-    int cnt;
-    int bw_cnt;
-    struct timeval ping_start;
-    struct timeval ping_end;
-    struct timeval last_body_time;
-    struct timeval all_start_time;
-    double rtt_list[5];
-    double rtt;
-    double bandwidth;
-    double cmp_bandwidth;
-    double bandwidth_list[5];
-    int downloaded;
-} algorithm_ctx;
+
+
 
 struct st_h2o_httpclient_t {
     /**
@@ -157,7 +175,11 @@ struct st_h2o_httpclient_t {
     /**
      * returns a pointer to the alg
      */
-    algorithm_ctx *(*get_alg)(h2o_httpclient_t *cleint);
+    algorithm_ctx *(*get_alg)(h2o_httpclient_t *client);
+    /**
+     * returns a pointer to the s_ctx
+    */
+    sheduler_ctx *(*get_s_ctx)(h2o_httpclient_t *client);
     /**
      * callback that should be called when some data is fetched out from `buf`.
      */

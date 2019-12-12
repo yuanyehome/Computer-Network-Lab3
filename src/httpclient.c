@@ -28,11 +28,9 @@
 #define MIN(a, b) (((a) > (b)) ? (b) : (a))
 #endif
 
-static h2o_httpclient_connection_pool_t *connpool;
 static h2o_mem_pool_t pool;
-static char url[2048];
+static int delta = 1;
 static char *method = "GET";
-static int cnt_left = 1;
 static int body_size = 0;
 static int chunk_size = 10;
 static h2o_iovec_t iov_filler;
@@ -42,10 +40,22 @@ static int http2_ratio = -1;
 static int cur_body_size;
 static char *save_path = NULL;
 FILE *save_file = NULL;
+FILE *dat_file[3] = {0};
+char dat_file_name[3][100] = {"pics/data1.txt", "pics/data2.txt", "pics/data3.txt"};
 static char *server_file_path = NULL;
 static char url1[2048] = {0};
 static char url2[2048] = {0};
 static char url3[2048] = {0};
+unsigned char *file_buf = NULL;
+size_t full_size = 0;
+size_t chunk = 0;
+u_int8_t is_first_stream = 1;
+u_int8_t is_all_done;
+sheduler_ctx s_ctx[3] = {0};
+h2o_httpclient_ctx_t *ctx;
+struct timeval file_start, file_end;
+int all_done_flag = 0;
+
 
 static h2o_httpclient_head_cb on_connect(h2o_httpclient_t *client, const char *errstr, h2o_iovec_t *method, h2o_url_t *url,
                                          const h2o_header_t **headers, size_t *num_headers, h2o_iovec_t *body,
@@ -76,9 +86,12 @@ static void on_error(h2o_httpclient_ctx_t *ctx, const char *fmt, ...)
     h2o_timer_link(ctx->loop, 0, &exit_deferred);
 }
 
-static void start_request(h2o_httpclient_ctx_t *ctx)
+static void start_request(h2o_httpclient_ctx_t *ctx, char *url)
 {
+    all_done_flag += 1;
+    printf("\033[35m[start request]\033[0m %s\n", url);
     h2o_url_t *url_parsed;
+    h2o_httpclient_connection_pool_t *connpool = ctx->s_ctx->connpool;
 
     /* clear memory pool */
     h2o_mem_clear_pool(&pool);
@@ -120,6 +133,7 @@ static void start_request(h2o_httpclient_ctx_t *ctx)
         }
         h2o_socketpool_set_ssl_ctx(sockpool, ssl_ctx);
         SSL_CTX_free(ssl_ctx);
+        ctx->s_ctx->connpool = connpool;
     }
     h2o_httpclient_connect(NULL, &pool, url_parsed, ctx, connpool, url_parsed, on_connect);
 }
@@ -136,9 +150,9 @@ static int on_body(h2o_httpclient_t *client, const char *errstr)
     double time = now.tv_sec - alg->last_body_time.tv_sec
                     + (now.tv_usec - alg->last_body_time.tv_usec) * 1.0 / 1000000;
     alg->downloaded += (*client->buf)->size;
-    printf("\033[33m[DEBUG]\033[0m [size: %ld; time: %lf]\n", (*client->buf)->size, time);
+    // printf("\033[33m[DEBUG]\033[0m [size: %ld; time: %lf]\n", (*client->buf)->size, time);
     alg->bandwidth = (*client->buf)->size / (time * 1024 * 1024);
-    printf("\033[33m[DEBUG]\033[0m [This bandwidth: %lfM/s]\n", alg->bandwidth);
+    // printf("\033[33m[DEBUG]\033[0m [This bandwidth: %lfM/s]\n", alg->bandwidth);
     alg->last_body_time = now;
     if (alg->bw_cnt != 5) {
         alg->bandwidth_list[alg->bw_cnt++] = alg->bandwidth;
@@ -153,16 +167,69 @@ static int on_body(h2o_httpclient_t *client, const char *errstr)
         alg->bandwidth += alg->bandwidth_list[i];
     }
     alg->bandwidth /= alg->bw_cnt;
-    fwrite((*client->buf)->bytes, 1, (*client->buf)->size, save_file);
-    // fwrite((*client->buf)->bytes, 1, (*client->buf)->size, stdout);
-    h2o_buffer_consume(&(*client->buf), (*client->buf)->size);
 
-    if (errstr == h2o_httpclient_error_is_eos) {
-        if (--cnt_left != 0) {
-            /* next attempt */
-            h2o_mem_clear_pool(&pool);
-            start_request(client->ctx);
+    sheduler_ctx *this_s_ctx = client->get_s_ctx(client);
+    // printf("\033[34m[DEBUG]\033[0m %ld %ld %ld %ld %p\n", this_s_ctx->base_loc, this_s_ctx->downloaded_size, 
+    //     full_size, this_s_ctx->will_be_downloaded_size, file_buf);
+    memcpy(file_buf + this_s_ctx->base_loc + this_s_ctx->downloaded_size, (*client->buf)->bytes,
+        MIN((*client->buf)->size, this_s_ctx->will_be_downloaded_size));
+    this_s_ctx->downloaded_size += (*client->buf)->size;
+    this_s_ctx->will_be_downloaded_size -= MIN((*client->buf)->size, this_s_ctx->will_be_downloaded_size);
+    this_s_ctx->time_left = this_s_ctx->will_be_downloaded_size * 1.0 / (alg->bandwidth * 1024 * 1.024);
+    // fwrite((*client->buf)->bytes, 1, (*client->buf)->size, save_file);
+    h2o_buffer_consume(&(*client->buf), (*client->buf)->size);
+    // printf("\033[35m[DEBUG]\033[0m %ld\n", this_s_ctx->will_be_downloaded_size);
+
+    int this_idx = -1;
+    for (int i = 0; i < 3; ++i) {
+        if (&s_ctx[i] == this_s_ctx) this_idx = i;
+    }
+    if (this_idx == -1) {
+        printf("\033[31m[ERROR]\033[0m\n");
+        int __e;
+        scanf("%d", &__e);
+    }
+    char text[2048] = {0};
+    double time_elapsed = (now.tv_sec - file_start.tv_sec) * 1000
+                    + (now.tv_usec - file_start.tv_usec) * 1.0 / 1000;
+    sprintf(text, "%lf %lf\n", time_elapsed, 
+        (this_s_ctx->base_loc + this_s_ctx->downloaded_size)*1.0 / 1024);
+    fwrite(text, 1, strlen(text), dat_file[this_idx]);
+
+
+    if (this_s_ctx->time_left <= alg->rtt && this_s_ctx->num_streams < 2) {
+        this_s_ctx->will_done = 1;
+        int max_idx = 0;
+        double max_val = 0;
+        for (int i = 0; i < 3; ++i) {
+            if (i == this_idx) continue;
+            if (s_ctx[i].time_left > MIN(delta, alg->rtt)) {
+                this_s_ctx->will_done = 0;
+            }
+            if (s_ctx[i].time_left > max_val) max_idx = i, max_val = s_ctx[i].time_left;
         }
+        if (!this_s_ctx->will_done) {
+            this_s_ctx->num_streams += 1;
+            size_t continue_size = s_ctx[max_idx].will_be_downloaded_size * s_ctx[max_idx].alg->bandwidth / 
+                (s_ctx[max_idx].alg->bandwidth + alg->bandwidth);
+            size_t new_stream_size = s_ctx[max_idx].will_be_downloaded_size - continue_size;
+            printf("\033[31m[split]\033[0m continue: %ld new: %ld this_idx %d max-idx %d\n", 
+                continue_size, new_stream_size, this_idx, max_idx);
+            s_ctx[max_idx].will_be_downloaded_size = continue_size;
+            s_ctx[max_idx].time_left = continue_size * 1.0 / (s_ctx[max_idx].alg->bandwidth * 1024 * 1.024);
+            this_s_ctx->range[0] = s_ctx[max_idx].base_loc + s_ctx[max_idx].downloaded_size + 
+                s_ctx[max_idx].will_be_downloaded_size;
+            this_s_ctx->range[1] = this_s_ctx->range[0] + new_stream_size;
+            start_request(&ctx[this_idx], ctx[this_idx].url);
+        }
+    }
+
+    if (this_s_ctx->will_be_downloaded_size == 0) {
+        this_s_ctx->num_streams -= 1;
+        is_all_done += 1;
+        printf("\033[32m[is_all_done: %d this_idx: %d all_done_flag: %d]\033[0m\n", 
+            is_all_done, this_idx, all_done_flag);
+        return -1;
     }
     return 0;
 }
@@ -196,6 +263,39 @@ h2o_httpclient_body_cb on_head(h2o_httpclient_t *client, const char *errstr, int
         const char *name = headers[i].orig_name;
         if (name == NULL)
             name = headers[i].name->base;
+        if (is_first_stream && strcmp(name, "content-length") == 0) {
+            full_size = atol(headers[i].value.base);
+            size_t chunk = full_size / 3;
+            client->ctx->s_ctx->will_be_downloaded_size = chunk;
+            // printf("\033[33m[DEBUG]\033[0m get length: %ld\n", full_size);
+            if (is_first_stream) {
+                // printf("\033[34m[DEBUG]\033[0m first get head\n");
+                file_buf = malloc(full_size);
+                memset(file_buf, 0, full_size);
+                is_first_stream = 0;
+            }
+            s_ctx[0].base_loc = 0;
+            s_ctx[0].downloaded_size = 0;
+            s_ctx[0].will_be_downloaded_size = chunk;
+            s_ctx[0].is_range = 1;
+
+            s_ctx[1].base_loc = chunk;
+            s_ctx[1].downloaded_size = 0;
+            s_ctx[1].will_be_downloaded_size = chunk;
+            s_ctx[1].is_range = 1;
+            s_ctx[1].range[0] = chunk;
+            s_ctx[1].range[1] = 2 * chunk;
+
+            s_ctx[2].base_loc = chunk * 2;
+            s_ctx[2].downloaded_size = 0;
+            s_ctx[2].will_be_downloaded_size = full_size - chunk * 2;
+            s_ctx[2].is_range = 1;
+            s_ctx[2].range[0] = 2 * chunk;
+            s_ctx[2].range[1] = full_size;
+
+            start_request(&ctx[1], url2);
+            start_request(&ctx[2], url3);
+        }
         printf("%.*s: %.*s\n", (int)headers[i].name->len, name, (int)headers[i].value.len, headers[i].value.base);
     }
     printf("\n");
@@ -266,15 +366,23 @@ h2o_httpclient_head_cb on_connect(h2o_httpclient_t *client, const char *errstr, 
     *num_headers = 0;
     *body = h2o_iovec_init(NULL, 0);
     *proceed_req_cb = NULL;
-    // printf("\033[33m[DEBUG]\033[0m %d\n", cur_body_size);
+    h2o_headers_t headers_vec = (h2o_headers_t){NULL};
+    if (client->ctx->s_ctx->is_range) {
+        sheduler_ctx *tmp_s_ctx = client->ctx->s_ctx;
+        char msg_header[2048] = {0};
+        size_t msg_len = sprintf(msg_header, "bytes=%ld-%ld", tmp_s_ctx->range[0], tmp_s_ctx->range[1] - 1);
+        printf("\033[31m[msg]\033[0m %s\n",msg_header);
+        h2o_add_header(&pool, &headers_vec, H2O_TOKEN_RANGE, NULL, msg_header, msg_len);
+        *headers = headers_vec.entries;
+        *num_headers += 1;
+    }
     if (cur_body_size > 0) {
         char *clbuf = h2o_mem_alloc_pool(&pool, char, sizeof(H2O_UINT32_LONGEST_STR) - 1);
         size_t clbuf_len = sprintf(clbuf, "%d", cur_body_size);
-        h2o_headers_t headers_vec = (h2o_headers_t){NULL};
-        printf("\033[33m[DEBUG]\033[0m %s\n", H2O_TOKEN_CONTENT_LENGTH->buf.base);
+        // printf("\033[33m[DEBUG]\033[0m %s %ld\n", clbuf, clbuf_len);
         h2o_add_header(&pool, &headers_vec, H2O_TOKEN_CONTENT_LENGTH, NULL, clbuf, clbuf_len);
         *headers = headers_vec.entries;
-        *num_headers = 1;
+        *num_headers += 1;
 
         *proceed_req_cb = proceed_request;
 
@@ -318,13 +426,12 @@ static void process_url(char * url_, char * u) {
 
 int main(int argc, char **argv)
 {
-    struct timeval file_start, file_end;
     gettimeofday(&file_start, NULL);
     h2o_multithread_queue_t *queue;
     h2o_multithread_receiver_t getaddr_receiver;
 
     const uint64_t timeout = 5000; /* 5 seconds */
-    h2o_httpclient_ctx_t ctx = {
+    h2o_httpclient_ctx_t _ctx[3] = {{
         NULL, /* loop */
         &getaddr_receiver,
         timeout,                                 /* io_timeout */
@@ -332,8 +439,33 @@ int main(int argc, char **argv)
         timeout,                                 /* first_byte_timeout */
         NULL,                                    /* websocket_timeout */
         0,                                       /* keepalive_timeout */
-        H2O_SOCKET_INITIAL_INPUT_BUFFER_SIZE * 2 /* max_buffer_size */
-    };
+        H2O_SOCKET_INITIAL_INPUT_BUFFER_SIZE * 2, /* max_buffer_size */
+        &s_ctx[0],
+        url1
+    }, {
+        NULL, /* loop */
+        &getaddr_receiver,
+        timeout,                                 /* io_timeout */
+        timeout,                                 /* connect_timeout */
+        timeout,                                 /* first_byte_timeout */
+        NULL,                                    /* websocket_timeout */
+        0,                                       /* keepalive_timeout */
+        H2O_SOCKET_INITIAL_INPUT_BUFFER_SIZE * 2, /* max_buffer_size */
+        &s_ctx[1],
+        url2
+    }, {
+        NULL, /* loop */
+        &getaddr_receiver,
+        timeout,                                 /* io_timeout */
+        timeout,                                 /* connect_timeout */
+        timeout,                                 /* first_byte_timeout */
+        NULL,                                    /* websocket_timeout */
+        0,                                       /* keepalive_timeout */
+        H2O_SOCKET_INITIAL_INPUT_BUFFER_SIZE * 2, /* max_buffer_size */
+        &s_ctx[2],
+        url3
+    }};
+    ctx = _ctx;
     int opt;
 
     SSL_load_error_strings();
@@ -390,7 +522,6 @@ int main(int argc, char **argv)
     process_url(url1, argv[optind]);
     process_url(url2, argv[optind + 1]);
     process_url(url3, argv[optind + 2]);
-    strcpy(url, url1);
 
     if (body_size != 0) {
         iov_filler.base = h2o_mem_alloc(chunk_size);
@@ -408,33 +539,41 @@ int main(int argc, char **argv)
             }
         }
     }
+    for (int i = 0; i < 3; ++i) {
+        dat_file[i] = fopen(dat_file_name[i], "w");
+    }
+    
 
-    ctx.http2.ratio = http2_ratio;
+    ctx[2].http2.ratio = ctx[1].http2.ratio = ctx[0].http2.ratio = http2_ratio;
 
 /* setup context */
 #if H2O_USE_LIBUV
     printf("\033[32m[INFO]\033[0m You are using libuv\n");
-    ctx.loop = uv_loop_new();
+    ctx[0].loop = uv_loop_new();
 #else
     printf("\033[32m[INFO]\033[0m You are \033[31mnot\033[0m Using libuv\n");
-    ctx.loop = h2o_evloop_create();
+    ctx[0].loop = h2o_evloop_create();
 #endif
 
-    queue = h2o_multithread_create_queue(ctx.loop);
-    h2o_multithread_register_receiver(queue, ctx.getaddr_receiver, h2o_hostinfo_getaddr_receiver);
+    ctx[1].loop = ctx[2].loop = ctx[0].loop;
+
+    queue = h2o_multithread_create_queue(ctx[0].loop);
+    h2o_multithread_register_receiver(queue, ctx[0].getaddr_receiver, h2o_hostinfo_getaddr_receiver);
 
     /* setup the first request */
-    start_request(&ctx);
-    while (cnt_left != 0) {
+    start_request(&ctx[0], url1);
+    while (is_all_done != all_done_flag) {
 #if H2O_USE_LIBUV
-        uv_run(ctx.loop, UV_RUN_ONCE);
+        uv_run(ctx[0].loop, UV_RUN_ONCE);
 #else
-        h2o_evloop_run(ctx.loop, INT32_MAX);
+        h2o_evloop_run(ctx[0].loop, INT32_MAX);
 #endif
     }
 
-    if (save_path != NULL && save_file != NULL)
+    if (save_path != NULL && save_file != NULL) {
+        fwrite(file_buf, 1, full_size, save_file);
         fclose(save_file);
+    }
     gettimeofday(&file_end, NULL);
     printf("\033[32m[INFO]\033[0m [Full time: %lf ms]\n", (file_end.tv_sec - file_start.tv_sec) * 1000.0 + 
         (file_end.tv_usec - file_start.tv_usec) * 1.0 / 1000);
