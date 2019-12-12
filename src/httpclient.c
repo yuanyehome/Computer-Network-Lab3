@@ -35,8 +35,8 @@ static int body_size = 0;
 static int chunk_size = 10;
 static h2o_iovec_t iov_filler;
 static int delay_interval_ms = 0;
-static int ssl_verify_none = 0;
-static int http2_ratio = -1;
+static int ssl_verify_none = 1;
+static int http2_ratio = 100;
 static int cur_body_size;
 static char *save_path = NULL;
 FILE *save_file = NULL;
@@ -477,32 +477,6 @@ int main(int argc, char **argv)
         case 't':
             server_file_path = malloc(strlen(optarg) + 1);
             strcpy(server_file_path, optarg);
-            break;
-        case 'm':
-            method = optarg;
-            break;
-        case 'b':
-            body_size = atoi(optarg);
-            if (body_size <= 0) {
-                fprintf(stderr, "body size must be greater than 0\n");
-                exit(EXIT_FAILURE);
-            }
-            break;
-        case 'c':
-            chunk_size = atoi(optarg);
-            if (chunk_size <= 0) {
-                fprintf(stderr, "chunk size must be greater than 0\n");
-                exit(EXIT_FAILURE);
-            }
-            break;
-        case 'i':
-            delay_interval_ms = atoi(optarg);
-            break;
-        case 'r':
-            http2_ratio = atoi(optarg);
-            break;
-        case 'k':
-            ssl_verify_none = 1;
             break;
         case 'o':
             save_path = malloc(strlen(optarg) + 1);
