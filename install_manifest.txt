@@ -111,4 +111,5 @@
 /usr/local/share/doc/h2o/examples/h2o_mruby/h2o.conf
 /usr/local/share/doc/h2o/examples/doc_root/test.txt
 /usr/local/share/doc/h2o/examples/doc_root/index.html
+/usr/local/share/doc/h2o/examples/doc_root/1.mp4
 /usr/local/share/doc/h2o/examples/doc_root/1.jpg

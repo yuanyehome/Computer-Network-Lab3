@@ -62,6 +62,7 @@ typedef struct {
     size_t downloaded_size;
     size_t will_be_downloaded_size;
     size_t base_loc;
+    double bandwidth;
     u_int8_t is_range;
     u_int8_t will_done;
     u_int8_t num_streams;

@@ -169,6 +169,7 @@ static int on_body(h2o_httpclient_t *client, const char *errstr)
     alg->bandwidth /= alg->bw_cnt;
 
     sheduler_ctx *this_s_ctx = client->get_s_ctx(client);
+    this_s_ctx->bandwidth = alg->bandwidth;
     // printf("\033[34m[DEBUG]\033[0m %ld %ld %ld %ld %p\n", this_s_ctx->base_loc, this_s_ctx->downloaded_size, 
     //     full_size, this_s_ctx->will_be_downloaded_size, file_buf);
     memcpy(file_buf + this_s_ctx->base_loc + this_s_ctx->downloaded_size, (*client->buf)->bytes,
@@ -209,14 +210,19 @@ static int on_body(h2o_httpclient_t *client, const char *errstr)
             if (s_ctx[i].time_left > max_val) max_idx = i, max_val = s_ctx[i].time_left;
         }
         if (!this_s_ctx->will_done) {
+            if (s_ctx[max_idx].will_be_downloaded_size <= alg->rtt * s_ctx->bandwidth) {
+                printf("\033[31m[qwq]\033[0m\n");
+                return 0;
+            }
             this_s_ctx->num_streams += 1;
-            size_t continue_size = s_ctx[max_idx].will_be_downloaded_size * s_ctx[max_idx].alg->bandwidth / 
+            size_t tmp = s_ctx[max_idx].will_be_downloaded_size - alg->rtt * s_ctx->bandwidth;
+            size_t continue_size = tmp * s_ctx[max_idx].alg->bandwidth / 
                 (s_ctx[max_idx].alg->bandwidth + alg->bandwidth);
-            size_t new_stream_size = s_ctx[max_idx].will_be_downloaded_size - continue_size;
+            size_t new_stream_size = tmp - continue_size;
             printf("\033[31m[split]\033[0m continue: %ld new: %ld this_idx %d max-idx %d\n", 
                 continue_size, new_stream_size, this_idx, max_idx);
-            s_ctx[max_idx].will_be_downloaded_size = continue_size;
-            s_ctx[max_idx].time_left = continue_size * 1.0 / (s_ctx[max_idx].alg->bandwidth * 1024 * 1.024);
+            s_ctx[max_idx].will_be_downloaded_size -= new_stream_size;
+            s_ctx[max_idx].time_left -= new_stream_size * 1.0 / (s_ctx[max_idx].alg->bandwidth * 1024 * 1.024);
             this_s_ctx->range[0] = s_ctx[max_idx].base_loc + s_ctx[max_idx].downloaded_size + 
                 s_ctx[max_idx].will_be_downloaded_size;
             this_s_ctx->range[1] = this_s_ctx->range[0] + new_stream_size;
