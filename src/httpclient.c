@@ -432,7 +432,6 @@ static void process_url(char * url_, char * u) {
 
 int main(int argc, char **argv)
 {
-    gettimeofday(&file_start, NULL);
     h2o_multithread_queue_t *queue;
     h2o_multithread_receiver_t getaddr_receiver;
 
@@ -502,6 +501,7 @@ int main(int argc, char **argv)
     process_url(url1, argv[optind]);
     process_url(url2, argv[optind + 1]);
     process_url(url3, argv[optind + 2]);
+    gettimeofday(&file_start, NULL);
 
     if (body_size != 0) {
         iov_filler.base = h2o_mem_alloc(chunk_size);

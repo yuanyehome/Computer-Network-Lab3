@@ -4,4 +4,4 @@ set style increment default
 set style data lines
 set xlabel 'time elapsed (ms)'
 set ylabel 'byte range (Kb)'
-plot [0:300][0:40000] "data1.txt" title '1' with points, "data2.txt" title '2' with points, "data3.txt" title '3' with points
+plot [0:40000][0:40000] "data1.txt" title '1' with points, "data2.txt" title '2' with points, "data3.txt" title '3' with points
