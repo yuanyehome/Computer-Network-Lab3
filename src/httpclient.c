@@ -88,6 +88,8 @@ static void on_error(h2o_httpclient_ctx_t *ctx, const char *fmt, ...)
 
 static void start_request(h2o_httpclient_ctx_t *ctx, char *url)
 {
+    ctx->s_ctx->num_streams += 1;
+    printf("\033[31m %d \033[0m\n", ctx->s_ctx->num_streams);
     all_done_flag += 1;
     printf("\033[35m[start request]\033[0m %s\n", url);
     h2o_url_t *url_parsed;
@@ -204,7 +206,7 @@ static int on_body(h2o_httpclient_t *client, const char *errstr)
         double max_val = 0;
         for (int i = 0; i < 3; ++i) {
             if (i == this_idx) continue;
-            if (s_ctx[i].time_left > MIN(delta, alg->rtt)) {
+            if (s_ctx[i].time_left > MIN(this_s_ctx->time_left + delta, alg->rtt)) {
                 this_s_ctx->will_done = 0;
             }
             if (s_ctx[i].time_left > max_val) max_idx = i, max_val = s_ctx[i].time_left;
@@ -214,7 +216,7 @@ static int on_body(h2o_httpclient_t *client, const char *errstr)
                 printf("\033[31m[qwq]\033[0m\n");
                 return 0;
             }
-            this_s_ctx->num_streams += 1;
+            // this_s_ctx->num_streams += 1;
             size_t tmp = s_ctx[max_idx].will_be_downloaded_size - alg->rtt * s_ctx->bandwidth;
             size_t continue_size = tmp * s_ctx[max_idx].alg->bandwidth / 
                 (s_ctx[max_idx].alg->bandwidth + alg->bandwidth);
@@ -235,6 +237,11 @@ static int on_body(h2o_httpclient_t *client, const char *errstr)
         is_all_done += 1;
         printf("\033[32m[is_all_done: %d this_idx: %d all_done_flag: %d]\033[0m\n", 
             is_all_done, this_idx, all_done_flag);
+        if (this_s_ctx->num_streams == 1) {
+            this_s_ctx->base_loc = this_s_ctx->range[0];
+            this_s_ctx->will_be_downloaded_size = this_s_ctx->range[1] - this_s_ctx->range[0];
+            this_s_ctx->downloaded_size = 0;
+        }
         return -1;
     }
     return 0;
